@@ -1,0 +1,51 @@
+date,headline,label_ref,predicted_sentiment_slm,predicted_sentiment_llm,predicted_sentiment_ens
+2025-05-18,Government subsidy program gives a lift to the agriculture sector,Neutral,Positive,Negative,Negative
+2025-03-18,Central bank maintains status quo on interest rates,Negative,Positive,Positive,Positive
+2025-03-02,Tech Giant's New Product Launch Sparks Sector-Wide Gains,Neutral,Positive,Negative,Negative
+2025-04-05,A massive data breach sends a tech company's stock tumbling,Positive,Negative,Neutral,Neutral
+2025-07-17,"Global trade talks collapse, causing market turmoil",Positive,Negative,Neutral,Neutral
+2025-05-28,Aerospace and Defense sector sees rally amid geopolitical tensions,Neutral,Positive,Neutral,Positive
+2025-02-28,No Headline,Negative,Positive,Positive,Positive
+2025-05-26,New IPO for a popular software firm is oversubscribed,Negative,Negative,Neutral,Neutral
+2025-04-02,Major technology firm acquires a smaller rival in a multi-billion dollar deal,Positive,Positive,Negative,Negative
+2025-07-18,Manufacturing PMI data signals economic expansion,Neutral,Positive,Negative,Negative
+2025-07-22,Financial services stocks rally on strong profit margins,Positive,Positive,Negative,Negative
+2025-05-21,No Headline,Negative,Positive,Positive,Positive
+2025-08-03,Mining company stock surges on commodity price boom,Negative,Positive,Neutral,Neutral
+2025-05-23,Tech Giant's New Product Launch Sparks Sector-Wide Gains,Neutral,Positive,Negative,Negative
+2025-03-12,Financial sector bracing for new capital requirements,Positive,Positive,Neutral,Neutral
+2025-06-30,Major technology firm acquires a smaller rival in a multi-billion dollar deal,Neutral,Positive,Negative,Negative
+2025-04-07,ASX 200 gains on strong export performance,Positive,Positive,Negative,Negative
+2025-02-25,ASX 200 gains on strong export performance,Neutral,Positive,Negative,Negative
+2025-06-05,Bond yields tumble as investors seek safe havens,Positive,Negative,Neutral,Neutral
+2025-07-14,Utilities sector remains stable during market fluctuations,Neutral,Positive,Negative,Negative
+2025-05-20,Consumer Discretionary stocks outperform as spending increases,Positive,Negative,Neutral,Neutral
+2025-03-23,Quarterly report shows surprising losses for retail giants,Positive,Negative,Neutral,Neutral
+2025-08-14,Major oil spill sends energy stocks plummeting,Negative,Negative,Neutral,Neutral
+2025-03-22,China's Shanghai Composite falls after new trade restrictions,Positive,Negative,Neutral,Neutral
+2025-05-02,Healthcare stocks gain on robust demand and strong outlook,Positive,Positive,Negative,Negative
+2025-05-09,Retail sales report surpasses all forecasts,Neutral,Positive,Negative,Negative
+2025-05-15,Government subsidy program gives a lift to the agriculture sector,Positive,Positive,Negative,Negative
+2025-06-09,Federal Reserve Chairman's speech causes market volatility,Positive,Negative,Neutral,Neutral
+2025-07-20,Gold prices surge as investors flee riskier assets,Positive,Positive,Neutral,Neutral
+2025-07-01,Semiconductor shortages weigh heavily on tech sector profits,Positive,Negative,Neutral,Neutral
+2025-02-14,Government subsidy program gives a lift to the agriculture sector,Neutral,Positive,Negative,Negative
+2025-04-27,No Headline,Negative,Positive,Positive,Positive
+2025-05-15,Geopolitical ceasefire prompts a broad market recovery,Neutral,Positive,Positive,Positive
+2025-06-15,Media and Entertainment companies report a surge in streaming revenue,Neutral,Positive,Negative,Negative
+2025-06-21,Major technology firm acquires a smaller rival in a multi-billion dollar deal,Neutral,Positive,Negative,Negative
+2025-03-18,Geopolitical ceasefire prompts a broad market recovery,Neutral,Positive,Positive,Positive
+2025-06-08,Healthcare stocks gain on robust demand and strong outlook,Neutral,Positive,Negative,Negative
+2025-05-23,Major technology firm acquires a smaller rival in a multi-billion dollar deal,Positive,Positive,Negative,Negative
+2025-04-14,Banking stocks dip after a major scandal is revealed,Negative,Negative,Neutral,Neutral
+2025-07-15,Financial sector bracing for new capital requirements,Positive,Positive,Neutral,Neutral
+2025-07-13,Aerospace and Defense sector sees rally amid geopolitical tensions,Neutral,Positive,Neutral,Positive
+2025-06-15,Bond yields tumble as investors seek safe havens,Positive,Negative,Neutral,Neutral
+2025-05-20,UK's FTSE 100 sees a boost from favorable trade data,Neutral,Positive,Negative,Negative
+2025-03-06,Government subsidy program gives a lift to the agriculture sector,Positive,Positive,Negative,Negative
+2025-06-10,Semiconductor shortages weigh heavily on tech sector profits,Positive,Negative,Neutral,Neutral
+2025-06-17,New housing data release shows a slowdown in market activity,Positive,Negative,Neutral,Neutral
+2025-07-17,Central bank maintains status quo on interest rates,Negative,Positive,Positive,Positive
+2025-05-18,Unexpected rise in unemployment fuels market pessimism,Negative,Negative,Neutral,Neutral
+2025-06-05,Geopolitical ceasefire prompts a broad market recovery,Negative,Positive,Positive,Positive
+2025-02-11,New IPO for a popular software firm is oversubscribed,Positive,Negative,Neutral,Neutral

@@ -1,0 +1,17 @@
+streamlit
+pandas
+numpy
+matplotlib
+scipy
+scikit-learn
+yfinance
+feedparser
+requests
+regex
+tqdm
+joblib
+transformers
+tokenizers
+sentencepiece
+# PyTorch CPU 版（很重要，否则默认装不全）
+torch --index-url https://download.pytorch.org/whl/cpu
