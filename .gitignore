@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual env
+venv/
+env/
+.myenv/
+.venv/
+
+# Jupyter/Cache
+.ipynb_checkpoints/
+*.DS_Store
+
+# Streamlit
+.streamlit/secrets.toml  # 别上传密钥！
+.streamlit/*.yaml
+
+# Data & outputs (按需放开)
+ai_briefs/
+figs/
+*.csv
+*.joblib
+*.pkl
+
+# Big model files
+*.bin
+*.safetensors
