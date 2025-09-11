@@ -1,4 +1,4 @@
-# app.py — Financial News Sentiment & Market Trends (safe & realtime)
+# app.py — Financial News Sentiment & Market Trends (OpenAI + T5 fallback)
 import os, re, io, json, requests, math, shutil, datetime as dt
 from typing import List, Tuple, Optional
 
@@ -14,8 +14,8 @@ st.set_page_config(page_title="Financial News Sentiment & Market Trends",
                    layout="wide", page_icon="📈")
 mpl.rcParams.update({"font.family": "DejaVu Sans", "axes.unicode_minus": True})
 
-# ------------------- Default Paths (can be overridden in sidebar) -------------------
-PATH_NEWS  = "financial_news_events_with_sentiment.csv"   # 主表(新闻+情绪)
+# ------------------- Default Paths -------------------
+PATH_NEWS  = "financial_news_events_with_sentiment.csv"
 PATH_DAILY = "sentiment_daily_infile.csv"
 PATH_CORR  = "correlation_summary.csv"
 PATH_TREND = "trend_summary.csv"
@@ -232,7 +232,7 @@ def plot_rolling_corr(g: pd.DataFrame, roll_win: int = 21) -> Optional[plt.Figur
     plt.tight_layout()
     return fig
 
-# ------------------- Daily brief (template) -------------------
+# ------------------- Daily brief (rule-based) -------------------
 def build_daily_brief(corr_df: pd.DataFrame, daily_df: pd.DataFrame) -> str:
     if daily_df.empty:
         return "No data available."
@@ -339,11 +339,17 @@ def filter_finance(df: pd.DataFrame, enabled: bool, level: int) -> pd.DataFrame:
 
 def fetch_newsapi(api_key: str, query: str="", from_hours: int=12,
                   page_size: int=100, language: str="en", source_mode: str="top-headlines",
-                  max_pages: int = 1) -> Tuple[pd.DataFrame, dict]:
+                  max_pages: int = 1, country: Optional[str]="us") -> Tuple[pd.DataFrame, dict]:
+    """
+    强化版：
+    - top-headlines：默认 country='us', category='business'（可配 query）
+    - everything：使用 from_hours 时间窗 + sortBy=publishedAt
+    """
     if not api_key:
-        # 返回带标准列名的空表，避免下游 KeyError
-        return pd.DataFrame(columns=["date","headline","news_url","source","market_index"]), {"code":0, "raw":{}}
+        return pd.DataFrame(columns=["date","headline","news_url","source","market_index"]), {"code":0,"raw":{}}
 
+    rows = []
+    raw_any = {}
     if source_mode not in ("top-headlines","everything"):
         source_mode = "top-headlines"
 
@@ -357,16 +363,13 @@ def fetch_newsapi(api_key: str, query: str="", from_hours: int=12,
         url = "https://newsapi.org/v2/everything"
     else:
         base_params = {
-            "language": language, "pageSize": min(page_size, 100), "apiKey": api_key,
+            "language": language, "pageSize": min(page_size, 100),
+            "apiKey": api_key, "category": "business"
         }
-        if not query:
-            base_params["category"] = "business"
-        else:
-            base_params["q"] = query
+        if country: base_params["country"] = country
+        if query:   base_params["q"] = query
         url = "https://newsapi.org/v2/top-headlines"
 
-    rows = []
-    raw_any = {}
     for page in range(1, max_pages+1):
         params = dict(base_params); params["page"] = page
         try:
@@ -386,16 +389,14 @@ def fetch_newsapi(api_key: str, query: str="", from_hours: int=12,
         except Exception:
             break
 
-    meta = {"code": r.status_code if 'r' in locals() else 0, "raw": raw_any, "source": source_mode, "count": len(rows)}
+    meta = {"code": r.status_code if 'r' in locals() else 0, "raw": raw_any,
+            "source": source_mode, "count": len(rows), "params_used": base_params}
 
-    # —— 关键：空结果保护 + 统一列名 ——
     if not rows:
         return pd.DataFrame(columns=["date","headline","news_url","source","market_index"]), meta
 
     df = pd.DataFrame(rows)
-    # 统一为 tz-naive
     df["date"] = to_tznaive(df["date"])
-    # 即便全是 NaT，也不会 KeyError
     df = df.dropna(subset=["date"])
     if df.empty:
         return pd.DataFrame(columns=["date","headline","news_url","source","market_index"]), meta
@@ -444,7 +445,6 @@ def fetch_rss(n_limit: int = 120) -> pd.DataFrame:
     df["market_index"] = df["headline"].apply(map_index_from_headline)
     return df
 
-
 def fetch_returns_for_indices(indices: List[str], days: int=7) -> pd.DataFrame:
     try:
         import yfinance as yf
@@ -469,7 +469,7 @@ def fetch_returns_for_indices(indices: List[str], days: int=7) -> pd.DataFrame:
             out.append(tmp)
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
 
-# ------------------- Lightweight classifiers for real-time -------------------
+# ------------------- Lightweight SLM (DistilBERT) -------------------
 @st.cache_resource(show_spinner=False)
 def get_slm():
     import torch
@@ -532,11 +532,9 @@ def rt_classify_and_aggregate(df_news: pd.DataFrame, smooth_win: int=3, engine: 
         df["predicted_sentiment_slm"] = slm_predict(texts)
 
     val_map = {"Negative":-1, "Neutral":0, "Positive":1}
-    df["score"] = df["predicted_sentiment_slm"].map(val_map).fillna(0) * 0.6 * 0.6  # 简单权重
-    # 统一 date 为 tz-naive
+    df["score"] = df["predicted_sentiment_slm"].map(val_map).fillna(0) * 0.6 * 0.6
     df["date"] = to_tznaive(df["date"])
 
-    # D 聚合
     daily = (df.groupby([pd.Grouper(key="date", freq="D"), "market_index"])
                .agg(sent_index=("score","mean"), sent_n=("score","size"))
                .reset_index()
@@ -545,20 +543,127 @@ def rt_classify_and_aggregate(df_news: pd.DataFrame, smooth_win: int=3, engine: 
                                 .transform(lambda s: s.rolling(smooth_win, min_periods=1).mean())
     return df, daily
 
+# ------------------- GenAI helpers: OpenAI + T5 fallback -------------------
+def openai_chat(messages, model="gpt-4o-mini", temperature=0.2, timeout=60,
+                max_tokens=320, return_error=False):
+    """
+    返回 (text, err)。SDK -> HTTP fallback；对配额错误给出友好提示。
+    """
+    key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", ""))
+    if not key:
+        return (None, "Missing OPENAI_API_KEY") if return_error else None
+
+    def _fmt_err(e):
+        s = str(e)
+        if "insufficient_quota" in s or "RateLimitError" in s or "429" in s:
+            return "OpenAI quota/credit exhausted (429). Please check billing or change API key."
+        return s[:300]
+
+    # SDK path
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=key)
+        resp = client.chat.completions.create(
+            model=model, messages=messages, temperature=temperature, max_tokens=max_tokens
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        return (text, None) if return_error else text
+    except Exception as e1:
+        err1 = _fmt_err(e1)
+
+    # HTTP fallback
+    try:
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        payload = {"model": model, "messages": messages,
+                   "temperature": temperature, "max_tokens": max_tokens}
+        r = requests.post("https://api.openai.com/v1/chat/completions",
+                          json=payload, headers=headers, timeout=timeout)
+        j = r.json()
+        text = (j.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+        if not text:
+            raise RuntimeError(j)
+        return (text, None) if return_error else text
+    except Exception as e2:
+        err2 = _fmt_err(e2)
+        err = f"{err1} | {err2}" if err1 else err2
+        return (None, err) if return_error else None
+
+@st.cache_resource(show_spinner=False)
+def get_t5(model_name: str = "google/flan-t5-small"):
+    """
+    本地 T5（FLAN）用于摘要/要点。CPU/MPS/CUDA 自适应。
+    """
+    import torch
+    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK","1")
+    device = "mps" if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available() \
+             else ("cuda" if torch.cuda.is_available() else "cpu")
+    tok = AutoTokenizer.from_pretrained(model_name)
+    net = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device).eval()
+    return tok, net, device
+
+def t5_summarize_bullets(lines: List[str], prefix: str = "", max_new_tokens: int = 160) -> Optional[str]:
+    """
+    将若干行文本（标题等）压缩成 3-5 个要点（英文，客观中性）。
+    """
+    try:
+        import torch
+        tok, net, device = get_t5()
+        # 适度裁剪，避免过长
+        joined = "; ".join([l.strip() for l in lines if l])[:4000]
+        prompt = (prefix + " Summarize the following finance headlines into 3-5 concise, neutral bullet points. "
+                  "Focus on common themes, cross-market links, and what to watch. Headlines: " + joined)
+        enc = tok(prompt, truncation=True, padding=True, max_length=768, return_tensors="pt").to(device)
+        with torch.inference_mode():
+            out_ids = net.generate(**enc, max_new_tokens=max_new_tokens, num_beams=4)
+        text = tok.decode(out_ids[0], skip_special_tokens=True)
+        return text.strip()
+    except Exception:
+        return None
+
+# ------------------- Fallback insights -------------------
+def fallback_insight_rt(df_rt: pd.DataFrame, daily_rt: pd.DataFrame, hours: int = 12) -> str:
+    if df_rt.empty:
+        return "No fresh headlines to summarize."
+
+    dist = df_rt["predicted_sentiment_slm"].value_counts(dropna=False).to_dict()
+    dist_txt = ", ".join(f"{k}:{v}" for k, v in dist.items())
+
+    top_idx = df_rt["market_index"].value_counts().head(5).to_dict()
+    idx_txt = ", ".join(f"{k}:{v}" for k, v in top_idx.items())
+
+    import re
+    stop = set("the a an to for of and in on as is are at by with from over after before near new record live says amid report update market markets stock stocks shares bond bonds oil rate rates jobs fed china us eu uk deal sale plan".split())
+    words=[]
+    for t in df_rt["headline"].fillna("").astype(str).head(60):
+        ws = re.findall(r"[A-Za-z]{4,}", t.lower())
+        words += [w for w in ws if w not in stop]
+    kw = pd.Series(words).value_counts().head(8).index.tolist()
+    kw_txt = ", ".join(kw) if kw else "NA"
+
+    trend_txt = "NA"
+    if not daily_rt.empty:
+        gtmp = daily_rt.sort_values("date")
+        last = gtmp.groupby("market_index").tail(1).sort_values("sent_index", ascending=False).head(3)
+        trend_txt = "; ".join(f"{r.market_index}:{r.sent_index:+.3f}" for _, r in last.iterrows())
+
+    return (
+        f"Insight (rule-based, last {hours}h): "
+        f"Tone mix = {dist_txt}. Top indices = {idx_txt}. "
+        f"Recent per-index sentiment = {trend_txt}. "
+        f"Frequent keywords: {kw_txt}. Descriptive only; no investment advice."
+    )
+
 # ------------------- Sidebar -------------------
 st.sidebar.header("Data")
 smooth_win = st.sidebar.slider("Sentiment smoothing window (days)", 1, 7, 3, 1)
 min_n      = st.sidebar.slider("Min samples for correlation", 5, 40, 10, 1)
 roll_win   = st.sidebar.slider("Rolling window for correlation (days)", 10, 60, 21, 1)
 
-# --- Data source: choose main CSV path and show row count ---
+# Data source
 st.sidebar.markdown("### Data source")
 default_news_path = PATH_NEWS
-news_path_input = st.sidebar.text_input(
-    "Main CSV path (news + sentiments)",
-    value=default_news_path,
-    help="确保这是你想要追加的数据文件。支持相对或绝对路径。"
-)
+news_path_input = st.sidebar.text_input("Main CSV path (news + sentiments)", value=default_news_path)
 PATH_NEWS = news_path_input.strip() or default_news_path
 
 def _try_read_rows(fp):
@@ -566,11 +671,10 @@ def _try_read_rows(fp):
         return len(pd.read_csv(fp))
     except Exception:
         return 0
-
-st.sidebar.caption(f"Using: **{os.path.abspath(PATH_NEWS)}**")
+# st.sidebar.caption(f"Using: **{os.path.abspath(PATH_NEWS)}**")
 st.sidebar.write(f"Current rows: **{_try_read_rows(PATH_NEWS):,}**")
 
-# --- Lightweight Real-Time controls ---
+# Real-Time controls
 st.sidebar.markdown("### Lightweight Real-Time")
 use_newsapi   = st.sidebar.checkbox("Fetch via NewsAPI (recommended)", value=True)
 api_key_default = st.secrets.get("NEWSAPI_KEY", os.getenv("NEWSAPI_KEY", ""))
@@ -585,11 +689,32 @@ enable_extractive = st.sidebar.checkbox("Enable GenAI summarization (extractive)
 max_rt = st.sidebar.slider("Max headlines per fetch", 5, 50, 20, 1)
 
 st.sidebar.markdown("### Finance filter")
-restrict_fin = st.sidebar.checkbox("Restrict to finance domains", value=True)
+restrict_fin = st.sidebar.checkbox("Restrict to finance domains", value=False)
 fin_level = st.sidebar.slider("Finance filter level (higher = stricter)", 0, 4, 2, 1)
 
-st.sidebar.markdown("### Files expected in this folder:")
-st.sidebar.code("\n".join([os.path.basename(PATH_NEWS), PATH_DAILY, PATH_CORR, PATH_TREND]))
+# GenAI
+st.sidebar.markdown("### GenAI (optional)")
+use_openai   = st.sidebar.checkbox("Use OpenAI for brief/insight", value=True)
+openai_key_default = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", ""))
+openai_key_input   = st.sidebar.text_input("OpenAI API key (local only)",
+                                           value=openai_key_default if use_openai else "", type="password")
+openai_model = st.sidebar.selectbox("OpenAI model", ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"], index=0)
+test_openai_btn = st.sidebar.button("Test OpenAI key")
+
+st.sidebar.markdown("### NewsAPI mode")
+source_mode = st.sidebar.selectbox("Source mode", ["top-headlines", "everything"], index=0)
+country     = st.sidebar.text_input("Country (for top-headlines)", value="us", disabled=(source_mode!="top-headlines"))
+
+# st.sidebar.markdown("### Files expected in this folder:")
+# st.sidebar.code("\n".join([os.path.basename(PATH_NEWS), PATH_DAILY, PATH_CORR, PATH_TREND]))
+
+if test_openai_btn and use_openai:
+    tmsg = [{"role":"user","content":"ping"}]
+    txt, err = openai_chat(tmsg, model=openai_model, max_tokens=5, return_error=True)
+    if txt:
+        st.sidebar.success("OpenAI key OK.")
+    else:
+        st.sidebar.error(err or "Failed to call OpenAI.")
 
 # ------------------- Data loading / ensuring -------------------
 news_df  = load_csv(PATH_NEWS)
@@ -667,12 +792,69 @@ with tabs[4]:
     if corr_df.empty or daily_df.empty:
         st.info("Need correlation & daily data.")
     else:
-        brief = build_daily_brief(corr_df, daily_df)
+        rule_brief = build_daily_brief(corr_df, daily_df)
         st.subheader("Auto-generated English Daily Brief")
-        st.text_area("Daily brief", value=brief, height=220)
-        st.download_button("Download brief (.txt)",
-                           brief.encode("utf-8"), file_name="ai_brief.txt", mime="text/plain")
-    st.caption("© Your Name — For academic research only. No investment advice.")
+        st.text_area("Rule-based brief", value=rule_brief, height=200)
+
+        # GenAI brief
+        st.markdown("**GenAI brief (OpenAI ➜ T5 ➜ rule-based)**")
+        col1, col2 = st.columns([1,3])
+        gen_btn = col1.button("Generate with GenAI")
+        gen_placeholder = col2.empty()
+
+        if gen_btn:
+            # Build compact context for LLM/T5
+            dd = daily_df.copy()
+            dd["date"] = to_tznaive(dd["date"])
+            as_of = dd["date"].max().date() if not dd.empty else dt.date.today()
+            pos = corr_df[(corr_df["p (t→t+1)"] < 0.10) & (corr_df["Pearson (t→t+1)"] > 0)]\
+                    .sort_values("Pearson (t→t+1)", ascending=False).head(5)
+            neg = corr_df[(corr_df["p (t→t+1)"] < 0.10) & (corr_df["Pearson (t→t+1)"] < 0)]\
+                    .sort_values("Pearson (t→t+1)").head(5)
+
+            # 1) OpenAI
+            insight_text = None
+            err_msg = None
+            if use_openai:
+                msg = [
+                    {"role":"system","content":"You are a financial research assistant. Write concise, neutral summaries for a daily market brief. Avoid advice; focus on data."},
+                    {"role":"user","content":(
+                        f"As of {as_of}, we track a news-derived daily sentiment index vs market returns.\n"
+                        f"Significant next-day correlations (p<0.10):\n"
+                        f"Positive: {pos[['Index','Pearson (t→t+1)','p (t→t+1)']].to_dict(orient='records')}\n"
+                        f"Negative: {neg[['Index','Pearson (t→t+1)','p (t→t+1)']].to_dict(orient='records')}\n"
+                        f"Latest per-index sentiment (top 3): "
+                        f"{dd.sort_values('date').groupby('market_index').tail(1).sort_values('sent_index', ascending=False).head(3)[['market_index','sent_index']].to_dict(orient='records')}\n"
+                        "Write 4–6 bullet points in English, neutral tone."
+                    )}
+                ]
+                with st.spinner("OpenAI generating…"):
+                    insight_text, err_msg = openai_chat(msg, model=openai_model, max_tokens=360, return_error=True)
+
+            # 2) T5 fallback
+            if not insight_text:
+                # 用相关性表编个小上下文
+                bullets_src = []
+                for _, r in pos.iterrows():
+                    bullets_src.append(f"Positive corr: {r['Index']} r={r['Pearson (t→t+1)']:+.3f} p={r['p (t→t+1)']:.3g}")
+                for _, r in neg.iterrows():
+                    bullets_src.append(f"Negative corr: {r['Index']} r={r['Pearson (t→t+1)']:+.3f} p={r['p (t→t+1)']:.3g}")
+                prefix = f"As of {as_of}, news-derived sentiment & next-day market correlation summary."
+                with st.spinner("T5 generating (fallback)…"):
+                    insight_text = t5_summarize_bullets(bullets_src, prefix=prefix, max_new_tokens=160)
+
+            # 3) Rule-based fallback
+            if not insight_text:
+                insight_text = rule_brief
+                if err_msg:
+                    st.warning(err_msg)
+
+            gen_placeholder.write(insight_text)
+            st.download_button("Download GenAI brief (.txt)",
+                               (insight_text or "").encode("utf-8"),
+                               file_name=f"ai_brief_{as_of}.txt", mime="text/plain")
+
+        st.caption("© Your Name — For academic research only. No investment advice.")
 
 # -------- Real-Time --------
 with tabs[5]:
@@ -685,7 +867,6 @@ with tabs[5]:
     if "rt_df" not in st.session_state:    st.session_state["rt_df"] = pd.DataFrame()
     if "rt_daily" not in st.session_state: st.session_state["rt_daily"] = pd.DataFrame()
 
-    # --- Test key ---
     if test_btn and use_newsapi:
         try:
             r = requests.get("https://newsapi.org/v2/top-headlines",
@@ -694,19 +875,21 @@ with tabs[5]:
         except Exception as e:
             st.exception(e)
 
-    # --- Fetch ---
     if fetch_btn:
         if use_newsapi:
-            df_rt, meta = fetch_newsapi(api_key_input, query=news_query, from_hours=int(from_hours),
-                                        page_size=max_rt, source_mode="top-headlines", max_pages=1)
+            if source_mode == "everything":
+                df_rt, meta = fetch_newsapi(api_key_input, query=news_query, from_hours=int(from_hours),
+                                            page_size=max_rt, source_mode="everything", max_pages=1)
+            else:
+                df_rt, meta = fetch_newsapi(api_key_input, query=news_query, from_hours=int(from_hours),
+                                            page_size=max_rt, source_mode="top-headlines",
+                                            max_pages=1, country=(country or "us"))
             st.info(f"NewsAPI fetched: {meta.get('count',0)} headlines. (source={meta.get('source')} code={meta.get('code')})")
         else:
             df_rt = fetch_rss(n_limit=int(rss_max))
             st.info(f"RSS fetched: {len(df_rt)} headlines.")
 
-        # 金融域过滤
         df_rt = filter_finance(df_rt, restrict_fin, fin_level)
-        # 限制数量
         if len(df_rt) > max_rt:
             df_rt = df_rt.head(max_rt)
 
@@ -719,11 +902,50 @@ with tabs[5]:
             st.session_state["rt_daily"] = daily_rt.copy()
             st.success(f"Fetched {len(df_rt)} headlines.")
 
-            # 简单“抽取式要点”
+            # GenAI insight（OpenAI ➜ T5 ➜ 规则）
+            with st.expander("GenAI insight (over fetched headlines)", expanded=True):
+                texts = df_rt["headline"].fillna("").astype(str).tolist()
+                pos = int((df_rt["predicted_sentiment_slm"] == "Positive").sum())
+                neg = int((df_rt["predicted_sentiment_slm"] == "Negative").sum())
+                neu = int((df_rt["predicted_sentiment_slm"] == "Neutral").sum())
+                idx_top = df_rt["market_index"].value_counts().head(5).to_dict()
+
+                insight = None
+                err = None
+
+                # 1) OpenAI
+                if use_openai:
+                    messages = [
+                        {"role":"system","content":"You are a financial research assistant. Produce concise news-driven market insight. No advice; neutral tone."},
+                        {"role":"user","content":(
+                            f"Headlines (most recent first): {texts[:30]}\n"
+                            f"Tone counts (P/N/Neut) = ({pos}/{neg}/{neu}); "
+                            f"Top indices by count = {idx_top}. "
+                            f"Summarize 3–5 bullets: what themes dominate, any cross-market angle, and what to watch."
+                        )}
+                    ]
+                    with st.spinner("OpenAI generating…"):
+                        insight, err = openai_chat(messages, model=openai_model, max_tokens=220, return_error=True)
+
+                # 2) T5 fallback
+                if not insight:
+                    with st.spinner("T5 generating (fallback)…"):
+                        prefix = f"Latest {int(from_hours)}h finance headlines."
+                        insight = t5_summarize_bullets(texts[:40], prefix=prefix, max_new_tokens=140)
+
+                # 3) 规则回退
+                if not insight:
+                    if err:
+                        st.warning(err)
+                    insight = fallback_insight_rt(df_rt, daily_rt, hours=int(from_hours))
+
+                st.write(insight)
+
+            # 抽取式要点（本地规则）
             if enable_extractive:
                 st.markdown("#### Extractive summary (top lines):")
-                # 规则：近期+包含关键词优先
-                key_terms = ["rate","inflation","jobs","fed","market","stocks","index","earnings","growth","trade","tariff","oil","bond","yields","tech","chip"]
+                key_terms = ["rate","inflation","jobs","fed","market","stocks","index","earnings","growth",
+                             "trade","tariff","oil","bond","yields","tech","chip","china","europe","us"]
                 df_sc = df_rt.copy()
                 score = []
                 for t in df_sc["headline"].fillna("").astype(str):
@@ -731,7 +953,7 @@ with tabs[5]:
                     tl = t.lower()
                     for k in key_terms:
                         if k in tl: s += 1
-                    s += min(3, len(t)//50)  # 长标题少许加分
+                    s += min(3, len(t)//50)
                     score.append(s)
                 df_sc["__score"] = score
                 for line in df_sc.sort_values(["__score","date"], ascending=[False, False]).head(min(12, len(df_sc)))["headline"].tolist():
@@ -746,35 +968,35 @@ with tabs[5]:
             use_container_width=True, height=320
         )
 
-        idx_list_rt = sorted(st.session_state["rt_daily"]["market_index"].unique().tolist())
-        idx_pick_rt = st.selectbox("Select index for RT chart", idx_list_rt, index=0, key="rt_idx")
+        # idx_list_rt = sorted(st.session_state["rt_daily"]["market_index"].unique().tolist())
+        # idx_pick_rt = st.selectbox("Select index for RT chart", idx_list_rt, index=0, key="rt_idx")
 
-        g = st.session_state["rt_daily"][st.session_state["rt_daily"]["market_index"]==idx_pick_rt].copy()
-        g = g.sort_values("date")
-        use_yf = st.checkbox("Also plot recent market cumulative via yfinance", value=False)
-        if use_yf:
-            df_ret = fetch_returns_for_indices([idx_pick_rt], days=7)
-            if not df_ret.empty:
-                g = g.merge(df_ret, on=["date","market_index"], how="left")
-                g["cum_index"] = (1 + g["ret"].fillna(0)).cumprod() * 100.0
+        # g = st.session_state["rt_daily"][st.session_state["rt_daily"]["market_index"]==idx_pick_rt].copy()
+        # g = g.sort_values("date")
+        # use_yf = st.checkbox("Also plot recent market cumulative via yfinance", value=False)
+        # if use_yf:
+        #     df_ret = fetch_returns_for_indices([idx_pick_rt], days=7)
+        #     if not df_ret.empty:
+        #         g = g.merge(df_ret, on=["date","market_index"], how="left")
+        #         g["cum_index"] = (1 + g["ret"].fillna(0)).cumprod() * 100.0
 
-        fig, ax1 = plt.subplots(figsize=(9.5, 4.4))
-        ax1.plot(g["date"], g["sent_smooth"], lw=2, label=f"RT Sentiment ({smooth_win}D)")
-        ax1.axhline(0, ls="--", lw=1, alpha=0.6)
-        ax1.set_ylabel("Sentiment (weighted)")
-        title = f"Real-time: {idx_pick_rt} — Sentiment"
-        if "cum_index" in g.columns and g["cum_index"].notna().any():
-            ax2 = ax1.twinx()
-            ax2.plot(g["date"], g["cum_index"], lw=1.6, alpha=0.9, label="Cumulative (=100)")
-            ax2.set_ylabel("Cumulative")
-            title += " vs Market"
-            l1, lab1 = ax1.get_legend_handles_labels()
-            l2, lab2 = ax2.get_legend_handles_labels()
-            ax1.legend(l1+l2, lab1+lab2, loc="upper left")
-        else:
-            ax1.legend(loc="upper left")
-        ax1.set_title(title)
-        plt.tight_layout(); st.pyplot(fig); plt.close(fig)
+        # fig, ax1 = plt.subplots(figsize=(9.5, 4.4))
+        # ax1.plot(g["date"], g["sent_smooth"], lw=2, label=f"RT Sentiment ({smooth_win}D)")
+        # ax1.axhline(0, ls="--", lw=1, alpha=0.6)
+        # ax1.set_ylabel("Sentiment (weighted)")
+        # title = f"Real-time: {idx_pick_rt} — Sentiment"
+        # if "cum_index" in g.columns and g["cum_index"].notna().any():
+        #     ax2 = ax1.twinx()
+        #     ax2.plot(g["date"], g["cum_index"], lw=1.6, alpha=0.9, label="Cumulative (=100)")
+        #     ax2.set_ylabel("Cumulative")
+        #     title += " vs Market"
+        #     l1, lab1 = ax1.get_legend_handles_labels()
+        #     l2, lab2 = ax2.get_legend_handles_labels()
+        #     ax1.legend(l1+l2, lab1+lab2, loc="upper left")
+        # else:
+        #     ax1.legend(loc="upper left")
+        # ax1.set_title(title)
+        # plt.tight_layout(); st.pyplot(fig); plt.close(fig)
 
     # --- Append ---
     if append_btn:
@@ -792,15 +1014,12 @@ with tabs[5]:
 
             def _normalize(df: pd.DataFrame) -> pd.DataFrame:
                 df = df.copy()
-                # URL 标准化（去重更稳）
                 if "news_url" in df.columns:
                     df["news_url"] = df["news_url"].astype(str).str.strip().str.lower()
                 else:
                     df["news_url"] = np.nan
-                # 日期 tz-naive
                 if "date" in df.columns:
                     df["date"] = to_tznaive(df["date"])
-                # 市场索引兜底
                 if "market_index" not in df.columns:
                     df["market_index"] = "ALL"
                 return df
@@ -816,14 +1035,9 @@ with tabs[5]:
             after = len(merged)
             added = after - before
 
-            # Sanity：禁止把大表写小
             if before > 0 and after < before:
-                st.error(
-                    f"Sanity check failed: merged rows ({after:,}) < original ({before:,}). "
-                    "Abort writing to avoid losing data. Please check PATH_NEWS."
-                )
+                st.error(f"Sanity check failed: merged rows ({after:,}) < original ({before:,}). Abort writing.")
             else:
-                # 备份 + 写回
                 try:
                     ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
                     bak = f"{PATH_NEWS}.bak_{ts}"
@@ -846,7 +1060,6 @@ with tabs[5]:
                 except Exception as e:
                     st.exception(e)
 
-                # 清缓存并刷新
                 try:
                     st.cache_data.clear()
                 except Exception:
@@ -855,5 +1068,3 @@ with tabs[5]:
                     st.rerun()
                 elif hasattr(st, "experimental_rerun"):
                     st.experimental_rerun()
-                else:
-                    st.info("Append 成功。当前 Streamlit 无自动刷新，请手动 Rerun。")

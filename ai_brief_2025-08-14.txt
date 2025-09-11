@@ -1,0 +1,22 @@
+Real-Time Financial Sentiment → Market Move (t→t+1)
+Date: 2025-08-14
+
+Summary
+- We measure the next-day correlation between the news-derived daily sentiment index and market returns across indices.
+  - **DAX**: r=-0.223 (p=0.024, N=103)
+
+Today’s highest sentiment levels:
+  - Nasdaq Composite: +0.480
+  - TSX: +0.390
+  - FTSE 100: +0.360
+  - S&P/TSX Composite: +0.180
+  - Russell 2000: +0.180
+
+5-day momentum (top movers):
+  - TSX: +0.600
+  - Hang Seng: +0.600
+  - FTSE 100: +0.360
+  - CAC 40: +0.180
+  - S&P 500: +0.180
+
+Note: Correlations are indicative, not causal; sample size matters.

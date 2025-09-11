@@ -1,4 +1,4 @@
 ,pred_Negative,pred_Neutral,pred_Positive
 ref_Negative,440,18,516
-ref_Neutral,493,23,606
+ref_Neutral,426,16,509
 ref_Positive,454,15,459

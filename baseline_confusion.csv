@@ -1,4 +1,4 @@
 ,pred_Negative,pred_Neutral,pred_Positive
-ref_Negative,78,67,55
-ref_Neutral,88,80,60
-ref_Positive,81,54,42
+ref_Negative,75,63,61
+ref_Neutral,73,58,65
+ref_Positive,80,49,47

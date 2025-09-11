@@ -27,3 +27,10 @@ figs/
 # Big model files
 *.bin
 *.safetensors
+
+# 在 .gitignore 中添加
+.env
+.env.*
+secrets/
+*.key
+*.pem
